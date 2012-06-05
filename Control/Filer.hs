@@ -1,8 +1,9 @@
-module Main
+module Control.Filer
+  ( move )
   where
 
 import System.FilePath (takeExtension, addExtension)
-import System.IO (stdout, stdin, hFlush, hSetBuffering, BufferMode(..))
+import System.IO (stdout, hFlush)
 
 import Control.Applicative
 import Control.Monad
@@ -50,16 +51,7 @@ promptP = Frame . forever $ do
     doYield <- lift prompt 
     when doYield . yieldF $ Move {originalname=filename, newname=newname}
 
-consume :: Frame a b IO [a]
-consume = Frame go where 
-  go = do
-    x <- await 
-    case x of 
-        Nothing -> close $ pure []
-        Just a -> fmap (fmap (a:)) go
+move :: FilePath -> Frame () Action IO ()
+move dir = promptP <-< fixname <-< filterP isAudioFile <-< files dir
 
-main = do 
-    hSetBuffering stdin NoBuffering
-    let discard x = [] <$ x
-    files <- runFrame $ consume <-< discard (promptP <-< fixname <-< filterP isAudioFile <-< files ".")
-    mapM_ print files
+

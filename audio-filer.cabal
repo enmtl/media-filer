@@ -1,0 +1,27 @@
+name:           audio-filer
+version:        0.0
+license:        GPL 
+license-file:   COPYING
+category:       Audio 
+author:         Sean Mitchell <seanmtchll@gmail.com>
+maintainer:     Sean Mitchell <seanmtchll@gmail.com>
+stability:      experimental
+synopsis:       Moves and renames audio files based on metadata information 
+cabal-version: >= 1.8
+build-type:     Simple
+description:
+    Moves and renames audio files based on metadata information 
+
+Executable audio-filer
+    Main-is: filer.hs
+    Other-Modules:  Control.Filer
+            
+             
+    build-depends:  base,
+                    directory,
+                    filepath,
+                    filemanip,
+                    text,
+                    transformers,
+                    pipes >= 2.0
+                    
