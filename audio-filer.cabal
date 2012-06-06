@@ -21,6 +21,7 @@ Executable audio-filer
                     directory,
                     filepath,
                     filemanip,
+                    cmdargs,
                     text,
                     transformers,
                     pipes >= 2.0
