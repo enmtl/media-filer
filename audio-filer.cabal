@@ -14,7 +14,9 @@ description:
 
 Executable audio-filer
     Main-is: filer.hs
-    Other-Modules:  Control.Filer
+    Other-Modules:  Control.Filer,
+                    Control.Filer.Search,
+                    Control.Pipe.Utils
             
              
     build-depends:  base,

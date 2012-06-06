@@ -1,7 +1,9 @@
+{-# LANGUAGE GADTs #-}
 module Main 
   where
 
 import System.IO (stdin, hSetBuffering, BufferMode(..))
+import System.Directory
 
 import System.Console.CmdArgs.Explicit hiding (mode)
 import qualified System.Console.CmdArgs.Explicit as CmdArgsExplicit
@@ -12,16 +14,22 @@ import Data.List (intercalate, isPrefixOf)
 
 import Control.Applicative
 import Control.Pipe
+import Control.Pipe.Utils
 import qualified Control.Filer as Filer
 
+data AudioFormat = AudioFormatAll  
+                 | AudioFormat { ogg :: Bool, flac :: Bool, mp3 :: Bool }
+audioFormatFlags = [
+    flagNone "ogg" (List 
 
-data Cmd = None 
-         | Help (Maybe String)
+data Cmd opts = Help (Maybe String)
          | Version
          | Add [FilePath] 
          | Put FilePath 
          | Edit [FilePath] 
          | Tags [FilePath] 
+         | List [FilePath] AudioFormat
+         | View
          | Check 
   deriving Show
 
@@ -60,10 +68,20 @@ tags = mode "tags" (Tags []) "Show the tags of the audio file"
     (flagArg upd fileOrDir_) [] []
   where upd x cmd = Right $ case cmd of (Tags paths) -> Tags (x:paths); _ -> cmd
 
+list :: Mode Cmd
+list = mode "list" (List []) "List audio files"
+    (flagArg upd fileOrDir_) [] []
+  where upd x cmd = Right $ case cmd of (List paths) -> List (x:paths); _ -> cmd
+
 check :: Mode Cmd
 check = mode "check" Check "Verifies the consistancy of the library" 
     (flagArg (\_ _ -> Left "Bad argument") "") [] []
   where upd x cmd = case cmd of Check -> Left "Bad argument"; _ -> Right cmd
+
+view :: Mode Cmd
+view = mode "view" View "Views the contents of the repositiory" 
+    (flagArg (\_ _ -> Left "Bad argument") "") [] []
+  where upd x cmd = case cmd of View -> Left "Bad argument"; _ -> Right cmd
 
 
 help :: Mode Cmd
@@ -81,7 +99,7 @@ globalFlags = Group [] [] [("Global", [flagHelpSimple (const $ Help Nothing)])]
 commands :: Mode Cmd
 commands = cmds
   where
-    cmds' = (modes "audio-filer" None "manipulates audio files based on metadata" [])
+    cmds' = (modes "audio-filer" (Help Nothing) "manipulates audio files based on metadata" [])
         {modeGroupFlags=noArgFlags `mappend` globalFlags
         ,modeArgs=([], Just (flagArg helpCmd ""))
         } 
@@ -90,8 +108,8 @@ commands = cmds
 
     groupModes = Group [] []
         [("Commands", [help])
-        ,("Changing or querying an audio file", [edit, tags])
-        ,("Changing the library", [add])
+        ,("Changing or querying audio files", [list, edit, tags])
+        ,("Changing or querying the library", [add, view])
         ,("Administrating libraries", [check, put])
         ]
 
@@ -99,13 +117,6 @@ commands = cmds
     helpCmd arg (Help Nothing) = Right $ Help (Just arg)
     helpCmd _ cmd = Left "not a valid command"
 
-toList :: Frame a b IO [a]
-toList = Frame go where 
-  go = do
-    x <- await 
-    case x of 
-        Nothing -> close $ pure []
-        Just a -> fmap (fmap (a:)) go
 
 run :: IO ()
 run = do
@@ -133,6 +144,10 @@ cmdHelp cmd = case possible of
         
   
 
+addDefaultPath :: [FilePath] -> IO [FilePath]
+addDefaultPath [] = (:[]) <$> getCurrentDirectory
+addDefaultPath xs = return xs
+
 
 main = do 
     cmd <- processArgs commands
@@ -145,6 +160,7 @@ main = do
                 Right help -> print $ help
             Nothing -> print $ topLevelHelp 
         Version -> print "version 3"
+        List paths -> runFrame . Filer.list =<< addDefaultPath paths
         _ -> do 
             print cmd
             run

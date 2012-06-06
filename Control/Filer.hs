@@ -1,5 +1,5 @@
 module Control.Filer
-  ( move )
+  ( move, list )
   where
 
 import System.FilePath (takeExtension, addExtension)
@@ -9,6 +9,8 @@ import Control.Applicative
 import Control.Monad
 import Control.Monad.Trans.Class
 import Control.Pipe hiding (Prompt)
+import Control.Pipe.Utils 
+import Control.Filer.Search
 
 data Action = Move {originalname :: FilePath, newname :: FilePath}
             | Copy {originalname :: FilePath, newname :: FilePath}
@@ -46,8 +48,8 @@ prompt = do
         '?' -> putStrLn "Help" >> prompt
         _ -> putStrLn "Invalid response" >> prompt
 
-promptP :: Frame (FilePath, FilePath) Action IO ()
-promptP = Frame go
+renamePrompt :: IO Prompt -> Frame (FilePath, FilePath) Action IO ()
+renamePrompt prompt = Frame go
   where 
     go = do 
         (filename, newname) <- awaitF
@@ -69,6 +71,9 @@ promptP = Frame go
 
 
 move :: FilePath -> Frame () Action IO ()
-move dir = promptP <-< fixname <-< filterP isAudioFile <-< files dir
+move dir = renamePrompt prompt <-< fixname <-< filterP isAudioFile <-< files dir
+
+list :: [FilePath] -> Stack IO () 
+list paths = printer <-< findFiles paths
 
 
