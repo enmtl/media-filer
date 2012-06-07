@@ -1,4 +1,4 @@
-{-# LANGUAGE GADTs #-}
+{-# LANGUAGE GADTs, ExistentialQuantification, ScopedTypeVariables #-}
 module Main 
   where
 
@@ -17,29 +17,101 @@ import Control.Pipe
 import Control.Pipe.Utils
 import qualified Control.Filer as Filer
 
-data AudioFormat = AudioFormatAll  
-                 | AudioFormat { ogg :: Bool, flac :: Bool, mp3 :: Bool }
-audioFormatFlags = [
-    flagNone "ogg" (List 
+class Flags a where 
+    flags :: Group (Flag (Cmd a))
 
-data Cmd opts = Help (Maybe String)
-         | Version
-         | Add [FilePath] 
-         | Put FilePath 
-         | Edit [FilePath] 
-         | Tags [FilePath] 
-         | List [FilePath] AudioFormat
-         | View
-         | Check 
-  deriving Show
+data AudioFormatD where
+     AudioFormatAll :: AudioFormatD 
+     AudioFormat :: { ogg :: Bool, flac :: Bool, mp3 :: Bool } -> AudioFormatD
 
+class AudioFormat a where
+    audioFormat :: a -> AudioFormatD
+    modifyAudioFormat :: a -> (AudioFormatD -> AudioFormatD) -> a
+    
+instance AudioFormat AudioFormatD where
+    audioFormat = id
+    modifyAudioFormat a f = f a
+
+newtype ListOpts = ListOpts AudioFormatD
+newtype TagsOpts = TagsOpts AudioFormatD
+                                        
+
+
+
+data Cmd opts where
+    Help    :: (Maybe String) -> Cmd ()
+    ListOptions :: Maybe String -> Cmd ()
+    Version :: Cmd ()
+    Switch  :: HideCmd -> Cmd opts 
+    Add     :: [FilePath] -> Cmd ()
+    Edit    :: [FilePath] -> Cmd ()
+    Tags    :: [FilePath] -> TagsOpts -> Cmd TagsOpts
+    List    :: [FilePath] -> ListOpts -> Cmd ListOpts
+    Put     :: FilePath -> Cmd ()
+    View    :: Cmd ()
+    Check   :: Cmd ()
+
+
+instance Show (Cmd opts) where
+    show (Help a)       = "Help " ++ show a
+    show (ListOptions a) = "ListOptions " ++ show a
+    show (Version)      = "Version"
+    show (Switch cmd)   = "Switch " ++ show cmd 
+    show (Add paths)    = "Add " ++ show paths
+    show (Edit paths)   = "Edit " ++ show paths
+    show (Tags paths _)   = "Tags " ++ show paths
+    show (List paths _) = "List " ++ show paths
+    show (Put path)     = "Path " ++ path
+    show (View)         = "View"
+    show (Check)        = "Check"
+            
+
+data HideCmd = forall a. Hide (Cmd a)
+instance Show HideCmd where
+    show (Hide a) = show a
+
+class HideMode a where
+    hide :: Remap m => m (Cmd a) -> m HideCmd
+
+instance HideMode () where
+    hide = remap Hide (\cmd -> (from cmd, Hide)) 
+        where from (Hide x@(Help _)) = x
+              from (Hide x@(ListOptions _)) = x
+              from (Hide (Switch a)) = Switch a
+              from (Hide x@(Version)) = x  
+              from (Hide x@(Add _)) = x  
+              from (Hide x@(Edit _)) = x  
+              from (Hide x@(View)) = x  
+              from (Hide x@(Put _)) = x  
+              from (Hide x@(Check)) = x  
+
+instance HideMode ListOpts where
+    hide = remap Hide (\cmd -> (from cmd, Hide))
+        where from (Hide x@(List _ _)) = x 
+              from (Hide (Switch a)) = Switch a
+
+instance HideMode TagsOpts where
+    hide = remap Hide (\cmd -> (from cmd, Hide))
+        where from (Hide x@(Tags _ _)) = x 
+              from (Hide (Switch a)) = Switch a
+        
+
+
+setOpts :: Cmd opts -> opts -> Cmd opts
+setOpts (List paths opts) opts' = List paths opts'
+setOpts x _ = x
+
+mode :: String -> (Cmd a) -> String -> Arg (Cmd a) -> [Flag (Cmd a)] -> [String] -> Mode (Cmd a)
 mode name cmd help arg flags suffix= 
     mode' {modeGroupFlags=groupFlags, modeHelpSuffix=suffix}
-  where mode' = CmdArgsExplicit.mode name cmd help arg flags
-        groupFlags = addedFlags `mappend` (modeGroupFlags mode')
-        addedFlags = toGroup . (helpFlag:) . filter (notElem "help" . flagNames) 
-                    .  fromGroup $ globalFlags
-        helpFlag = flagHelpSimple (const $ Help (Just name))
+  where 
+    mode' = CmdArgsExplicit.mode name cmd help arg flags
+    groupFlags = addedFlags `mappend` (modeGroupFlags mode')
+    addedFlags = toGroup [helpFlag, listOptionFlag]
+    helpFlag = flagHelpSimple (const $ Switch . Hide . Help $ Just name)
+    listOptionFlag = flagNone ["list-options"] 
+            (const $ Switch . Hide . ListOptions $ Just name) "List options"
+        
 
 file = "FILE"
 file_ = file ++ "..."
@@ -48,69 +120,81 @@ dir_ = dir ++ "..."
 fileOrDir = "<FILE or DIRECTORY>"
 fileOrDir_ = fileOrDir ++ "..."
 
-add :: Mode Cmd
+type ModeCmd a = Mode (Cmd a)
+
+arg :: (Update (Cmd a)) -> String -> Arg (Cmd a)
+arg upd meta = flagArg upd' meta
+    where upd' _ cmd@(Switch _) = Right $ cmd
+          upd' name cmd = upd name cmd
+
+add :: ModeCmd () 
 add = mode "add" (Add []) "Add and rename audio files into the library" 
     (flagArg upd fileOrDir_) [] []
   where upd x cmd = Right $ case cmd of (Add paths) -> Add (x:paths); _ -> cmd
 
-put :: Mode Cmd
+put :: ModeCmd () 
 put = mode "put" (Put ".") "Copies the audio library to a new location" 
     (flagArg upd dir) [] []
   where upd x cmd = Right $ case cmd of (Put path) -> Put x; _ -> cmd
 
-edit :: Mode Cmd
+edit :: ModeCmd ()
 edit = mode "edit" (Edit []) "Edits the tags of the audio file"
     (flagArg upd fileOrDir_) [] []
   where upd x cmd = Right $ case cmd of (Edit paths) -> Edit (x:paths); _ -> cmd
 
-tags :: Mode Cmd
-tags = mode "tags" (Tags []) "Show the tags of the audio file"
-    (flagArg upd fileOrDir_) [] []
-  where upd x cmd = Right $ case cmd of (Tags paths) -> Tags (x:paths); _ -> cmd
+tags :: ModeCmd TagsOpts 
+tags = mode "tags" (Tags [] $ TagsOpts AudioFormatAll) "Show the tags of the audio file"
+    (arg upd fileOrDir_) [] []
+  where upd x (Tags paths opts) = Right $ Tags (x:paths) opts
 
-list :: Mode Cmd
-list = mode "list" (List []) "List audio files"
-    (flagArg upd fileOrDir_) [] []
-  where upd x cmd = Right $ case cmd of (List paths) -> List (x:paths); _ -> cmd
+list :: ModeCmd ListOpts
+list = mode "list" (List [] $ ListOpts AudioFormatAll) "List audio files"
+    (arg upd fileOrDir_) [] []
+  where upd x (List paths opts) = Right $ List (x:paths) opts 
 
-check :: Mode Cmd
+check :: ModeCmd ()
 check = mode "check" Check "Verifies the consistancy of the library" 
     (flagArg (\_ _ -> Left "Bad argument") "") [] []
   where upd x cmd = case cmd of Check -> Left "Bad argument"; _ -> Right cmd
 
-view :: Mode Cmd
+view :: ModeCmd ()
 view = mode "view" View "Views the contents of the repositiory" 
     (flagArg (\_ _ -> Left "Bad argument") "") [] []
   where upd x cmd = case cmd of View -> Left "Bad argument"; _ -> Right cmd
 
 
-help :: Mode Cmd
+help :: ModeCmd ()
 help = mode "help" (Help Nothing) "Display help about audio-filer and audio-filer commands"
     (flagArg upd "Cmd") [] []
   where upd cmdname (Help Nothing) = Right $ Help (Just cmdname)
         upd cmdname hlp = Right $ hlp
 
-noArgFlags :: Group (Flag Cmd)
+noArgFlags :: Group (Flag (Cmd ()))
 noArgFlags = Group [] [] [("Other", [flagVersion (const $ Version)])]
 
-globalFlags :: Group (Flag Cmd)
+globalFlags :: Group (Flag (Cmd ()))
 globalFlags = Group [] [] [("Global", [flagHelpSimple (const $ Help Nothing)])] 
 
-commands :: Mode Cmd
+
+(+>) :: HideMode a => ModeCmd a -> [Mode HideCmd] -> [Mode HideCmd]
+next +> cmds = hide next : cmds
+infixr 9 +>
+
+commands :: Mode HideCmd
 commands = cmds
   where
-    cmds' = (modes "audio-filer" (Help Nothing) "manipulates audio files based on metadata" [])
-        {modeGroupFlags=noArgFlags `mappend` globalFlags
-        ,modeArgs=([], Just (flagArg helpCmd ""))
+    cmds' = (modes "audio-filer" (Hide $ Help Nothing) "manipulates audio files based on metadata" [])
+        {modeGroupFlags=hide <$> noArgFlags `mappend` globalFlags
+        ,modeArgs=([], Just (hide $ flagArg helpCmd ""))
         } 
 
     cmds = cmds' {modeGroupModes=groupModes}
 
     groupModes = Group [] []
-        [("Commands", [help])
-        ,("Changing or querying audio files", [list, edit, tags])
-        ,("Changing or querying the library", [add, view])
-        ,("Administrating libraries", [check, put])
+        [("Commands", help +> [])
+        ,("Changing or querying audio files", list +> edit +> tags +> [])
+        ,("Changing or querying the library", add +> view +> [])
+        ,("Administrating libraries", check +> put +> [])
         ]
 
 
@@ -118,12 +202,6 @@ commands = cmds
     helpCmd _ cmd = Left "not a valid command"
 
 
-run :: IO ()
-run = do
-    hSetBuffering stdin NoBuffering
-    let discard x = [] <$ x
-    files <- runFrame $ toList <-< discard (Filer.move ".")
-    mapM_ print files
 
 topLevelHelp :: [Text]
 topLevelHelp = 
@@ -148,21 +226,31 @@ addDefaultPath :: [FilePath] -> IO [FilePath]
 addDefaultPath [] = (:[]) <$> getCurrentDirectory
 addDefaultPath xs = return xs
 
-
-main = do 
-    cmd <- processArgs commands
-    case cmd of
-        Help arg -> case arg of
+{-
+run :: IO ()
+run = do
+    hSetBuffering stdin NoBuffering
+    let discard x = [] <$ x
+    files <- runFrame $ toList <-< discard (Filer.move ".")
+    mapM_ print files
+-}
+run :: Cmd a -> IO ()
+run (Help arg) = case arg of
             Just arg' -> case cmdHelp arg' of
                 Left [] -> putStrLn "No such command"
                 Left xs -> putStrLn $ "Did you mean one of " ++ 
                                         intercalate ", " xs ++ "?"
                 Right help -> print $ help
             Nothing -> print $ topLevelHelp 
-        Version -> print "version 3"
-        List paths -> runFrame . Filer.list =<< addDefaultPath paths
-        _ -> do 
-            print cmd
-            run
+run Version = putStrLn "version information"
+run (List paths opts) = runFrame . Filer.list =<< addDefaultPath paths  
+run (Switch cmd) = runHide cmd
+run cmd = print cmd
+
+runHide (Hide a) = run a
+
+main = do 
+    cmd <- processArgs commands
+    runHide cmd
              
 
