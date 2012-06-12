@@ -12,6 +12,8 @@ import Control.Pipe hiding (Prompt)
 import Control.Pipe.Utils 
 import Control.Filer.Search
 
+import Data.Filer
+
 data Action = Move {originalname :: FilePath, newname :: FilePath}
             | Copy {originalname :: FilePath, newname :: FilePath}
   deriving Show
@@ -73,7 +75,7 @@ renamePrompt prompt = Frame go
 move :: FilePath -> Frame () Action IO ()
 move dir = renamePrompt prompt <-< fixname <-< filterP isAudioFile <-< files dir
 
-list :: [FilePath] -> Stack IO () 
-list paths = printer <-< findFiles paths
+list :: AudioFormat -> [FilePath] -> Stack IO () 
+list fmt paths = printer <-< findFiles fmt paths
 
 
