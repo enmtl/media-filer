@@ -1,9 +1,9 @@
 {-# LANGUAGE TypeOperators, Rank2Types #-}
 {-# LANGUAGE MultiParamTypeClasses, FunctionalDependencies #-}
-{-# LANGUAGE UndecidableInstances, FlexibleInstances #-}
+{-# LANGUAGE FlexibleInstances, FlexibleContexts #-}
 {-# LANGUAGE DataKinds, GADTs, KindSignatures #-}
 {-# LANGUAGE PolyKinds #-}
-{-# LANGUAGE OverlappingInstances #-}
+--{-# LANGUAGE OverlappingInstances #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeFamilies #-}
 
@@ -21,8 +21,7 @@ import Data.Monoid
 class ResolveFlag f n  where
     resolveflag :: f a -> n a
 
-instance ResolveFlag f f where
-    resolveflag = id
+{-
 class Resolve n l l' | l -> l' where
     resolve :: l -> n l'
 
@@ -32,13 +31,74 @@ instance Applicative n => Resolve n (HList '[]) (HList '[]) where
 instance (Applicative n, ResolveFlag f n, Resolve n (HList l) (HList l')) => 
         Resolve n (HList ((f a) ': l)) (HList (a ': l'))  where
     resolve (HCons x xs) = HCons <$> (resolveflag x) <*> (resolve xs)
+-}
 
 data Proxy t = Proxy
+proxy :: a -> Proxy a
+proxy _ = Proxy
 
-class Default a b | b -> a, a -> b where
-    def :: Proxy a -> b
+type family Unwrap a :: [*]
+type instance Unwrap (HList l) = l
+
+class Initial a where
+    type Annotate a :: *
+    initial :: Proxy a -> (Annotate a) 
+
+data Default a = Default a | Selected a
+  deriving Show
+
+instance Initial Bool where
+    type Annotate Bool = Default Bool
+    initial _ = Default True
+
+instance Initial Int where
+    type Annotate Int = Default Int
+    initial _ = Default 0
 
 
+type family AnnotateList (ann :: [*]) :: [*]
+type instance AnnotateList '[] = '[]
+type instance AnnotateList (a ': l) = (Annotate a ': AnnotateList l)
+
+data LProxy (a :: [*]) = LProxy
+class InitialList (a :: [*]) where
+    ilist :: LProxy a -> HList (AnnotateList a)
+
+instance InitialList '[] where
+    ilist _ = HNil
+
+instance (Initial a, InitialList l) => InitialList (a ': l) where
+    ilist _ = HCons (initial (Proxy :: Proxy a)) (ilist (LProxy :: LProxy l))
+
+instance InitialList l => Initial (HList l) where
+    type Annotate (HList l) = HList (AnnotateList l)
+    initial _ = ilist (LProxy :: LProxy l)
+    
+
+
+
+{-
+class InitialList (a :: *) where
+    type Ann a :: [*]
+    ilist :: Proxy a -> HList (Ann a)
+
+instance InitialList (HList '[]) where
+    type Ann (HList '[]) = '[]
+    ilist _ = HNil
+
+instance (Initial a, NotElem a (HList l), InitialList (HList l)) => InitialList (HList (a ': l)) where
+    type Ann (HList (a ': l)) = (Annotation a) ': Ann (HList l)
+    ilist _ = HCons (initial (Proxy :: Proxy a)) (ilist (Proxy :: Proxy (HList l)))
+-}
+
+
+
+
+
+{-
+class DefaultFlag a where
+    def :: Annotate a
+    
 class DefaultList a b | b -> a, a -> b where
     listdef :: Proxy a -> b
 
@@ -58,6 +118,7 @@ instance Flag (HList '[]) a where
 
 instance (Flag a b, Flag (HList l) b) => Flag (HList (a ': l)) b where
     flags _ = flags (Proxy :: Proxy a) <> flags (Proxy :: Proxy (HList l))
+-}
 
 
 
@@ -67,8 +128,6 @@ instance (Flag a b, Flag (HList l) b) => Flag (HList (a ': l)) b where
 {-
 
 
-data Flagy a = Default a | ReturnF a
-  deriving Show
 
 flag f _ (Default a) = f a
 flag _ g (ReturnF a) = g a
