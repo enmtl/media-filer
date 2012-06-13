@@ -1,5 +1,8 @@
 {-# LANGUAGE GADTs, ExistentialQuantification #-} 
 {-# LANGUAGE MultiParamTypeClasses, FlexibleInstances, FlexibleContexts #-}
+{-# LANGUAGE TypeOperators #-}
+{-# LANGUAGE TypeFamilies, UndecidableInstances #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 module Main 
   where
@@ -17,6 +20,8 @@ import Data.Functor.Identity
 import Data.Maybe
 import Data.List (intercalate, isPrefixOf)
 import Data.Filer
+import Data.Filer.Flags as Flags
+import Data.TypeLists
 
 import Control.Applicative
 import Control.Monad
@@ -24,43 +29,46 @@ import Control.Pipe
 import Control.Pipe.Utils
 import qualified Control.Filer as Filer
 
-data Proxy a = Proxy
-data Flag a = Default a | Return a
+data Default a = Default a | Return a
 flag f _ (Default a) = f a
 flag _ g (Return a) = g a
-instance Resolveflag Flag Identity where
-    resolveFlag (Default a) = Identity a
-    resolveFlag (Return a) = Identity a
+
+instance ResolveFlag Default Identity where
+    resolveflag (Default a) = Identity a
+    resolveflag (Return a) = Identity a
 
 
-instance Default AudioFormat where
-    def _ = Default (AudioFormat True True True)
+instance Initial AudioFormat where
+    type Annotate AudioFormat = Default AudioFormat
+    
+    initial _ = Default (AudioFormat True True True)
 
 dual (AudioFormat a b c) = AudioFormat (not a) (not b) (not c)
 
-type ListFlags = HList (AudioFormat ': '[])
-type TagsFlags = HList (AudioFormat ': '[])
+type ListFlags = (HList (AudioFormat ': '[]))
+type TagsFlags = (HList (AudioFormat ': '[]))
 
     
-instance Modify (Flag AudioFormat) l => Flags (Flag AudioFormat) l where
+instance Modify (Default AudioFormat) l => Flags (Default AudioFormat) l where
     flags _ = toGroup $ 
-        [ flagNone ["ogg"] (mod ogg) "match on ogg format"
-        , flagNone ["no-ogg"] (nomod ogg) "don't match on ogg format"
-        , flagNone ["flac"] (mod flac) "match on flac format"
-        , flagNone ["no-flac"] (nomod flac) "don't match on flac"
-        , flagNone ["mp3"] (mod mp3) "match on mp3 format"
-        , flagNone ["no-mp3"] (nomod mp3) "don't match on mp3"
+        [ flagBool ["ogg"] (mod ogg) "match on ogg format"
+        , flagBool ["no-ogg"] (nomod ogg) "don't match on ogg format"
+        , flagBool ["flac"] (mod flac) "match on flac format"
+        , flagBool ["no-flac"] (nomod flac) "don't match on flac"
+        , flagBool ["mp3"] (mod mp3) "match on mp3 format"
+        , flagBool ["no-mp3"] (nomod mp3) "don't match on mp3"
         ]
       where 
-        mod f = modify $ Return . f . flag dual id
-        nomod f = modify $ Return . f . flag id id 
+        mod f b   = modify $ Return . f b . flag dual id
+        nomod f b = modify $ Return . f (not b) . flag id id 
         
-        ogg (AudioFormat b x y) = AudioFormat (not b) x y
-        flac (AudioFormat x b y) = AudioFormat x (not b) y
-        mp3 (AudioFormat x y b) = AudioFormat x y (not b)
+        ogg b (AudioFormat _ x y) = AudioFormat b x y
+        flac b (AudioFormat x _ y) = AudioFormat x b y
+        mp3 b (AudioFormat x y _) = AudioFormat x y b
 
-audioFlags :: Flags a AudioFormat => [(Flag (Cmd a))]
-audioFlags = fromGroup $ flags (Phantom :: Phantom AudioFormat)
+audioFlags :: (Flags (Default AudioFormat) l) => [Flag (Cmd l)]
+audioFlags = map (remap (error "not used") upd) . fromGroup $ flags (Proxy :: Proxy (Default AudioFormat))
+    where upd c = let opts = getFlags c in (opts, flip setFlags c)
 
 
 
@@ -71,8 +79,8 @@ data Cmd opts where
     Switch  :: HideCmd -> Cmd opts 
     Add     :: [FilePath] -> Cmd ()
     Edit    :: [FilePath] -> Cmd ()
-    Tags    :: [FilePath] -> TagsFlags -> Cmd MTagsFlags
-    List    :: [FilePath] -> ListFlags -> Cmd MListFlags
+    Tags    :: [FilePath] -> Annotate TagsFlags -> Cmd (Annotate TagsFlags)
+    List    :: [FilePath] -> Annotate ListFlags -> Cmd (Annotate ListFlags)
     Put     :: FilePath -> Cmd ()
     View    :: Cmd ()
     Check   :: Cmd ()
@@ -139,15 +147,12 @@ instance HideMode () where
               from (Hide x@(Put _)) = x  
               from (Hide x@(Check)) = x  
 
-instance HideMode (ListFlagsT Maybe) where
+instance HideMode (HList (Default AudioFormat ': '[])) where
     hide = remap Hide (\cmd -> (from cmd, Hide))
         where from (Hide x@(List _ _)) = x 
+              from (Hide x@(Tags _ _)) = x 
               from (Hide (Switch a)) = Switch a
 
-instance HideMode (TagsFlagsT Maybe) where
-    hide = remap Hide (\cmd -> (from cmd, Hide))
-        where from (Hide x@(Tags _ _)) = x 
-              from (Hide (Switch a)) = Switch a
         
 
 
@@ -192,14 +197,14 @@ edit = mode "edit" (Edit []) "Edits the tags of the audio file" []
     (flagArg upd fileOrDir_) [] 
   where upd x cmd = Right $ case cmd of (Edit paths) -> Edit (x:paths); _ -> cmd
 
-tags :: ModeCmd MTagsFlags 
-tags = mode "tags" (Tags [] def) "Show the tags of the audio file" []
+tags :: ModeCmd (Annotate TagsFlags)
+tags = mode "tags" (Tags [] (initial (Proxy :: Proxy ListFlags))) "Show the tags of the audio file" []
     (arg upd fileOrDir_) 
     audioFlags
   where upd x (Tags paths opts) = Right $ Tags (x:paths) opts
 
-list :: ModeCmd MListFlags
-list = mode "list" (List [] def) "List audio files" []
+list :: ModeCmd (Annotate ListFlags)
+list = mode "list" (List [] (initial (Proxy :: Proxy ListFlags))) "List audio files" []
     (arg upd fileOrDir_) 
     audioFlags
   where upd x (List paths opts) = Right $ List (x:paths) opts 
@@ -295,10 +300,10 @@ run (Help arg) = case arg of
                 Right help -> print $ help
             Nothing -> print $ topLevelHelp 
 run Version = putStrLn "version information"
-run (List paths opts) = do
-                let afmt = runIdentity . getAudioFormat . setDefaults $ opts
-                print afmt
-                runFrame . Filer.list afmt =<< addDefaultPath paths  
+run (List paths opts') = do
+                let opts = runIdentity . resolve $ opts'
+                print opts
+                --runFrame . Filer.list (getElem opts) =<< addDefaultPath paths  
 run (Switch cmd) = runHide cmd
 run cmd = print cmd
 

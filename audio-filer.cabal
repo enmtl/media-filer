@@ -17,6 +17,8 @@ Executable audio-filer
     Other-Modules:  Control.Filer,
                     Control.Filer.Search,
                     Control.Pipe.Utils
+                    Data.Filer.Flags
+                    Data.TypeLists
             
              
     build-depends:  base,

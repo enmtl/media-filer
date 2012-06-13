@@ -6,6 +6,7 @@
 --{-# LANGUAGE OverlappingInstances #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE UndecidableInstances #-}
 
 module Data.Filer.Flags 
   where
@@ -21,39 +22,32 @@ import Data.Monoid
 class ResolveFlag f n  where
     resolveflag :: f a -> n a
 
-{-
-class Resolve n l l' | l -> l' where
-    resolve :: l -> n l'
+type family ScrubList (ann :: [*]) :: [*]
+type instance ScrubList '[] = '[]
+type instance ScrubList (f a ': l) = (a ': ScrubList l)
 
-instance Applicative n => Resolve n (HList '[]) (HList '[]) where
+class Resolve n l where
+    type Scrub l
+    resolve :: l -> n (Scrub l)
+
+instance Applicative n => Resolve n (HList '[]) where
+    type Scrub (HList '[]) = HList (ScrubList '[])
     resolve = pure
 
-instance (Applicative n, ResolveFlag f n, Resolve n (HList l) (HList l')) => 
-        Resolve n (HList ((f a) ': l)) (HList (a ': l'))  where
+instance (Applicative n, ResolveFlag f n, 
+          Resolve n (HList l), Scrub (HList l) ~ HList (ScrubList l)) => 
+        Resolve n (HList ((f a) ': l)) where
+    type Scrub (HList (f a ': l)) = HList ((a ': ScrubList l))
     resolve (HCons x xs) = HCons <$> (resolveflag x) <*> (resolve xs)
--}
 
 data Proxy t = Proxy
 proxy :: a -> Proxy a
 proxy _ = Proxy
 
-type family Unwrap a :: [*]
-type instance Unwrap (HList l) = l
-
 class Initial a where
     type Annotate a :: *
     initial :: Proxy a -> (Annotate a) 
 
-data Default a = Default a | Selected a
-  deriving Show
-
-instance Initial Bool where
-    type Annotate Bool = Default Bool
-    initial _ = Default True
-
-instance Initial Int where
-    type Annotate Int = Default Int
-    initial _ = Default 0
 
 
 type family AnnotateList (ann :: [*]) :: [*]
@@ -93,6 +87,14 @@ instance (Initial a, NotElem a (HList l), InitialList (HList l)) => InitialList 
 
 
 
+class Flags a b where
+    flags :: Proxy a -> CmdArgs.Group (CmdArgs.Flag b)
+
+instance Flags (HList '[]) a where
+    flags _ = CmdArgs.Group [] [] []
+
+instance (Flags a b, Flags (HList l) b) => Flags (HList (a ': l)) b where
+    flags _ = flags (Proxy :: Proxy a) <> flags (Proxy :: Proxy (HList l))
 
 
 {-
@@ -110,14 +112,6 @@ instance (Default a b , DefaultList (HList l) (HList l')) =>
         DefaultList (HList (a ': l)) (HList (b ': l')) where
     listdef _ = HCons (def (Proxy :: Proxy a)) (listdef (Proxy :: Proxy (HList l)))
 
-class Flag a b where
-    flags :: Proxy a -> CmdArgs.Group (CmdArgs.Flag b)
-
-instance Flag (HList '[]) a where
-    flags _ = CmdArgs.Group [] [] []
-
-instance (Flag a b, Flag (HList l) b) => Flag (HList (a ': l)) b where
-    flags _ = flags (Proxy :: Proxy a) <> flags (Proxy :: Proxy (HList l))
 -}
 
 
