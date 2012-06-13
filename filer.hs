@@ -11,7 +11,7 @@ import System.IO (stdin, hSetBuffering, BufferMode(..))
 import System.IO.Unsafe
 import System.Directory
 
-import System.Console.CmdArgs.Explicit hiding (mode)
+import System.Console.CmdArgs.Explicit hiding (mode, Help)
 import qualified System.Console.CmdArgs.Explicit as CmdArgsExplicit
 import System.Console.CmdArgs.Text 
 
@@ -43,13 +43,8 @@ instance Initial AudioFormat where
     
     initial _ = Default (AudioFormat True True True)
 
-dual (AudioFormat a b c) = AudioFormat (not a) (not b) (not c)
 
-type ListFlags = (HList (AudioFormat ': '[]))
-type TagsFlags = (HList (AudioFormat ': '[]))
-
-    
-instance Modify (Default AudioFormat) l => Flags (Default AudioFormat) l where
+instance Modify (Annotate AudioFormat) l => Flags AudioFormat l where
     flags _ = toGroup $ 
         [ flagBool ["ogg"] (mod ogg) "match on ogg format"
         , flagBool ["no-ogg"] (nomod ogg) "don't match on ogg format"
@@ -61,44 +56,57 @@ instance Modify (Default AudioFormat) l => Flags (Default AudioFormat) l where
       where 
         mod f b   = modify $ Return . f b . flag dual id
         nomod f b = modify $ Return . f (not b) . flag id id 
+        dual (AudioFormat a b c) = AudioFormat (not a) (not b) (not c)
         
         ogg b (AudioFormat _ x y) = AudioFormat b x y
         flac b (AudioFormat x _ y) = AudioFormat x b y
         mp3 b (AudioFormat x y _) = AudioFormat x y b
 
-audioFlags :: (Flags (Default AudioFormat) l) => [Flag (Cmd l)]
-audioFlags = map (remap (error "not used") upd) . fromGroup $ flags (Proxy :: Proxy (Default AudioFormat))
-    where upd c = let opts = getFlags c in (opts, flip setFlags c)
+instance Flags a (Annotate a) => Flags (Cmd a) (Cmd a) where
+    flags _ = onCmd <$> flags (Proxy :: Proxy a)
 
 
+onCmd = remap (error "not used") (\c -> (getFlags c, flip setFlags c))
+
+
+type Help = HList '[]
+type ListOptions    = HList '[]
+type Version        = HList '[]
+type Add            = HList '[]
+type Edit           = HList '[]
+type List           = HList '[AudioFormat]
+type Tags           = HList '[AudioFormat]
+type Put            = HList '[]
+type View           = HList '[]
+type Check          = HList '[]
 
 data Cmd opts where
-    Help    :: (Maybe String) -> Cmd ()
-    ListOptions :: Maybe String -> Cmd ()
-    Version :: Cmd ()
+    Help    :: (Maybe String) -> Cmd Help
+    ListOptions :: Maybe String -> Cmd ListOptions
+    Version :: Cmd Version
     Switch  :: HideCmd -> Cmd opts 
-    Add     :: [FilePath] -> Cmd ()
-    Edit    :: [FilePath] -> Cmd ()
-    Tags    :: [FilePath] -> Annotate TagsFlags -> Cmd (Annotate TagsFlags)
-    List    :: [FilePath] -> Annotate ListFlags -> Cmd (Annotate ListFlags)
-    Put     :: FilePath -> Cmd ()
-    View    :: Cmd ()
-    Check   :: Cmd ()
+    Add     :: [FilePath] -> Cmd Add
+    Edit    :: [FilePath] -> Cmd Edit
+    Tags    :: [FilePath] -> Annotate Tags -> Cmd Tags
+    List    :: [FilePath] -> Annotate List -> Cmd List
+    Put     :: FilePath -> Cmd Put
+    View    :: Cmd View
+    Check   :: Cmd Check
 
 
-getFlags :: Cmd opts -> opts
-getFlags (Help _)        = ()
-getFlags (ListOptions _) = ()
-getFlags (Version)       = ()
-getFlags (Add _)         = ()
-getFlags (Edit _)        = ()
+getFlags :: Cmd opts -> Annotate opts
+getFlags (Help _)        = HNil
+getFlags (ListOptions _) = HNil
+getFlags (Version)       = HNil
+getFlags (Add _)         = HNil
+getFlags (Edit _)        = HNil
 getFlags (Tags _ opts)   = opts
 getFlags (List _ opts)   = opts
-getFlags (Put _)         = ()
-getFlags (View)          = ()
-getFlags (Check)         = ()
+getFlags (Put _)         = HNil
+getFlags (View)          = HNil
+getFlags (Check)         = HNil
 
-setFlags :: opts -> Cmd opts -> Cmd opts
+setFlags :: Annotate opts -> Cmd opts -> Cmd opts
 setFlags _ x@(Help _) = x
 setFlags _ x@(ListOptions _) = x
 setFlags _ x@(Version) = x
@@ -135,7 +143,7 @@ instance Show HideCmd where
 class HideMode a where
     hide :: Remap m => m (Cmd a) -> m HideCmd
 
-instance HideMode () where
+instance HideMode (HList '[]) where
     hide = remap Hide (\cmd -> (from cmd, Hide)) 
         where from (Hide x@(Help _)) = x
               from (Hide x@(ListOptions _)) = x
@@ -147,7 +155,7 @@ instance HideMode () where
               from (Hide x@(Put _)) = x  
               from (Hide x@(Check)) = x  
 
-instance HideMode (HList (Default AudioFormat ': '[])) where
+instance HideMode (HList '[AudioFormat]) where
     hide = remap Hide (\cmd -> (from cmd, Hide))
         where from (Hide x@(List _ _)) = x 
               from (Hide x@(Tags _ _)) = x 
@@ -156,13 +164,17 @@ instance HideMode (HList (Default AudioFormat ': '[])) where
         
 
 
-mode :: String -> (Cmd a) -> String -> [String] -> Arg (Cmd a) -> [Flag (Cmd a)] -> Mode (Cmd a)
-mode name cmd help extendedHelp arg flags = 
+mode :: Flags (Cmd a) (Cmd a) => String -> (Cmd a) -> String -> [String] -> Arg (Cmd a) 
+    -> Mode (Cmd a)
+mode name cmd help extendedHelp arg = 
     mode' {modeGroupFlags=groupFlags, modeHelpSuffix=extendedHelp}
   where 
-    mode' = CmdArgsExplicit.mode name cmd help arg flags
-    groupFlags = addedFlags `mappend` (modeGroupFlags mode')
+    mode' = CmdArgsExplicit.mode name cmd help arg []
+    proxy :: a -> Proxy a; proxy _ = Proxy
+    
+    groupFlags = addedFlags <> flags (proxy cmd)
     addedFlags = toGroup [helpFlag, listOptionFlag]
+
     helpFlag = flagHelpSimple (const $ Switch . Hide . Help $ Just name)
     listOptionFlag = flagNone ["list-options"] 
             (const $ Switch . Hide . ListOptions $ Just name) "List options"
@@ -182,54 +194,52 @@ arg upd meta = flagArg upd' meta
     where upd' _ cmd@(Switch _) = Right $ cmd
           upd' name cmd = upd name cmd
 
-add :: ModeCmd () 
+add :: ModeCmd Add
 add = mode "add" (Add []) "Add and rename audio files into the library" []
-    (flagArg upd fileOrDir_) [] 
+    (flagArg upd fileOrDir_) 
   where upd x cmd = Right $ case cmd of (Add paths) -> Add (x:paths); _ -> cmd
 
-put :: ModeCmd () 
+put :: ModeCmd Put
 put = mode "put" (Put ".") "Copies the audio library to a new location" []
-    (flagArg upd dir) [] 
+    (flagArg upd dir) 
   where upd x cmd = Right $ case cmd of (Put path) -> Put x; _ -> cmd
 
-edit :: ModeCmd ()
+edit :: ModeCmd Edit
 edit = mode "edit" (Edit []) "Edits the tags of the audio file" []
-    (flagArg upd fileOrDir_) [] 
+    (flagArg upd fileOrDir_) 
   where upd x cmd = Right $ case cmd of (Edit paths) -> Edit (x:paths); _ -> cmd
 
-tags :: ModeCmd (Annotate TagsFlags)
-tags = mode "tags" (Tags [] (initial (Proxy :: Proxy ListFlags))) "Show the tags of the audio file" []
+tags :: ModeCmd Tags
+tags = mode "tags" (Tags [] (initial (Proxy :: Proxy Tags))) "Show the tags of the audio file" []
     (arg upd fileOrDir_) 
-    audioFlags
   where upd x (Tags paths opts) = Right $ Tags (x:paths) opts
 
-list :: ModeCmd (Annotate ListFlags)
-list = mode "list" (List [] (initial (Proxy :: Proxy ListFlags))) "List audio files" []
+list :: ModeCmd List
+list = mode "list" (List [] (initial (Proxy :: Proxy List))) "List audio files" []
     (arg upd fileOrDir_) 
-    audioFlags
   where upd x (List paths opts) = Right $ List (x:paths) opts 
 
-check :: ModeCmd ()
+check :: ModeCmd Check
 check = mode "check" Check "Verifies the consistancy of the library" []
-    (flagArg (\_ _ -> Left "Bad argument") "") [] 
+    (flagArg (\_ _ -> Left "Bad argument") "") 
   where upd x cmd = case cmd of Check -> Left "Bad argument"; _ -> Right cmd
 
-view :: ModeCmd ()
+view :: ModeCmd View
 view = mode "view" View "Views the contents of the repositiory" []
-    (flagArg (\_ _ -> Left "Bad argument") "") [] 
+    (flagArg (\_ _ -> Left "Bad argument") "") 
   where upd x cmd = case cmd of View -> Left "Bad argument"; _ -> Right cmd
 
 
-help :: ModeCmd ()
+help :: ModeCmd Help
 help = mode "help" (Help Nothing) "Display help about audio-filer and audio-filer commands" []
-    (flagArg upd "Cmd") [] 
+    (flagArg upd "Cmd") 
   where upd cmdname (Help Nothing) = Right $ Help (Just cmdname)
         upd cmdname hlp = Right $ hlp
 
-noArgFlags :: Group (Flag (Cmd ()))
+noArgFlags :: Group (Flag (Cmd Version))
 noArgFlags = Group [] [] [("Other", [flagVersion (const $ Version)])]
 
-globalFlags :: Group (Flag (Cmd ()))
+globalFlags :: Group (Flag (Cmd Help))
 globalFlags = Group [] [] [("Global", [flagHelpSimple (const $ Help Nothing)])] 
 
 
@@ -303,7 +313,7 @@ run Version = putStrLn "version information"
 run (List paths opts') = do
                 let opts = runIdentity . resolve $ opts'
                 print opts
-                --runFrame . Filer.list (getElem opts) =<< addDefaultPath paths  
+                runFrame . Filer.list (getElem opts) =<< addDefaultPath paths  
 run (Switch cmd) = runHide cmd
 run cmd = print cmd
 
