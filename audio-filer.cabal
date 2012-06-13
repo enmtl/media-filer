@@ -1,7 +1,7 @@
 name:           audio-filer
 version:        0.0
-license:        GPL 
-license-file:   COPYING
+license:        GPL-3 
+license-file:   LICENSE
 category:       Audio 
 author:         Sean Mitchell <seanmtchll@gmail.com>
 maintainer:     Sean Mitchell <seanmtchll@gmail.com>
